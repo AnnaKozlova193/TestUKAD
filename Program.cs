@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Xml;
@@ -41,7 +40,7 @@ namespace testUKAD
             }
         }
         // Собираем все ссылки с html страниц в единый список ссылок
-        public static void PickLinks(string html, out List<string> links)
+        public static void PickLinks(string address,string html, out List<string> links, out List<string> allSiteMaps)
         {
             links = new List<string>();
 
@@ -58,6 +57,16 @@ namespace testUKAD
             };
 
             links = links.Distinct().OrderBy(el => el).ToList();
+
+            allSiteMaps = new List<string>();
+
+            foreach (var item in links)
+            {
+                if (item.Contains("sitemap.xml"))
+                {
+                    allSiteMaps.Add(item);
+                }
+            }
         }
         public static void CleanLink(string address, List<string> links, out List<string> allCorr)
         {
@@ -95,16 +104,13 @@ namespace testUKAD
             }
             foreach (var item in correctL)
             {
-                if (item.Substring(8).Contains("/ /"))
-                {
-                    correct.Add($"https://{item.Substring(8).Replace("/ /", "/")}");
-                }
-                else
+                if (!(item.Contains("www.")))
                 {
                     correct.Add(item);
                 }
             }
             string nameSite = address.Substring(8);
+
             foreach (var item in correct)
             {
                 if (item.Contains("///"))
@@ -120,38 +126,65 @@ namespace testUKAD
                     correctLinks.Add(item);
                 }
                 allCorr = correctLinks.Distinct().ToList();
+           
             }
         }
         // парсим карту сайта выход список ссылок из карты 
-        public static void MapPageLinks(string responseRobot, string mainAdress,out List<string> links)
+        public static void MapPageLinks(string name,out List<string> links)
         {
-            string nameMapSite = String.Empty;
             links = new List<string>();
+
             char[] delimiterChars = { ' ', '*', '\t', '\n', '\r' };
 
-            string[] words = responseRobot.Split(delimiterChars);
-      
-            foreach (var item in words)
+            string[] words = name.Split(delimiterChars);
+            
+            XmlDocument doc = new XmlDocument();
+            
+            try
             {
-                if (item.Contains("sitemap"))
+                WebRequest request = HttpWebRequest.Create(name);
+                WebResponse response = request.GetResponse();
+                HttpWebResponse resHttp = (HttpWebResponse)response;
+                Stream data = response.GetResponseStream();
+                if (!((int)resHttp.StatusCode > 226 ||
+                     resHttp.StatusCode == HttpStatusCode.NotFound))
                 {
-                    nameMapSite = item;
-
-                    XmlTextReader readerPage = new XmlTextReader(nameMapSite);
-                    while (readerPage.Read())
+                    using (StreamReader streamReader = new StreamReader(data))
                     {
-                        switch (readerPage.NodeType)
+                        doc.LoadXml(streamReader.ReadToEnd());
+
+                        XmlElement xRoot = doc.DocumentElement;
+                       
+                        if (xRoot != null)
                         {
-                            case XmlNodeType.Text:
-                                if (readerPage.Value.Contains($"{mainAdress}"))
+                            foreach (XmlElement xnode in xRoot)
+                            {
+                                XmlNode attr = xnode.Attributes.GetNamedItem("url");
+
+                                foreach (XmlNode childnode in xnode.ChildNodes)
                                 {
-                                    links.Add(readerPage.Value);
+                                    if (childnode.Name == "loc")
+                                    {
+                                        links.Add($"{childnode.InnerText}");
+                                    }
                                 }
-                                break;
+                            }
                         }
                     }
                 }
-            } 
+                else
+                {
+                    Console.WriteLine("Page not exist ! - 404 - !");
+                }
+            }
+            catch (WebException wex)
+            {
+                //  Console.WriteLine(" WEX - " + wex.Message); 
+            }
+            catch (Exception ex)
+            {
+                //  Console.WriteLine(" EX - " + ex.Message); 
+            }
         }
         public static void TimingPage(string address, out string timing)
         {
@@ -194,18 +227,34 @@ namespace testUKAD
             timing = $"{timeToLoad.Milliseconds}";
 
         }
-        public static void CreateDictionary(List<string> resultLinksSite)
+        public static void CreateDictionary(List<string> resultLinksSite, string address)
         {
-            List<string> links = resultLinksSite.Distinct().ToList();
+            List<string> lns = new List<string>();
+            string l = string.Empty;
+            foreach (var item in resultLinksSite)
+            {
+                if (item.Contains(address))
+                {
+                    if (item.Contains("///"))
+                    {
+                        l = item.Replace("///", "//");
+                    }
+                    else
+                    {
+                        l = item;
+                    }
+                    lns.Add(l);
+                }
+            }
+            List<string> links = lns.Distinct().ToList();
           
             Dictionary<string, int> timingPages = new Dictionary<string, int>();
 
             for (int i = 0; i < links.Count; i++)
             {
-                TimingPage(links[i], out string timing);
+                TimingPage(l, out string timing);
 
-                timingPages.Add($"{links[i]}", Convert.ToInt32(timing, 10)); 
-                
+                timingPages.Add($"{links[i]}", Convert.ToInt32(timing, 10));
             }
             timingPages.OrderBy(x => x.Value).ToDictionary(pair => pair.Key, pair => pair.Value);
 
@@ -213,44 +262,37 @@ namespace testUKAD
             {
                 Console.WriteLine($"{item.Key} - {item.Value} ms.");
             }
-
         }
-
         static readonly HttpClient client = new HttpClient();
         static async Task Main()
         {
             string address = String.Empty;
-            string nameMapSite = String.Empty;
-            string nameRobotTxt = String.Empty;
-
+      
             Console.WriteLine("Input URL :");
 
             address = Console.ReadLine();
 
-            nameRobotTxt = $@"{address}/robots.txt";
-
+            string nameMap = $@"{address}/sitemap.xml";
+      
             List<string> linkPage = new List<string>();
+            List<string> allMaps = new List<string>();
             List<string> allSiteLinks = new List<string>();
             List<string> allLinksMap = new List<string>();
 
             try
             {
                 string responseBody = await client.GetStringAsync($"{address}");
-            
                 // Собираем все ссылки с html страницы в список ссылок
                 PickLinksFirstPage(address, responseBody, out List<string> url);
 
                 int countSymbol = address.Length;
               
-                url.ForEach(l => linkPage.Add(l.Substring(countSymbol)));// обрезали ссылку на главный адрес получили чистый адрес
+                url.ForEach(l => linkPage.Add(l.Substring(countSymbol)));
           
                 CleanLink(address, linkPage, out List<string> correctLinks);// все ссылки с первой страницы
 
-                CreateDictionary(correctLinks); // проверили время звпроса с первой страницы
-
                 try
-                {
-                    //Собираем ссылки на каждой найденной странице
+                {   //Собираем ссылки на каждой найденной странице
                     string responseChildPage = string.Empty;
                     foreach (var item in correctLinks)
                     {
@@ -258,13 +300,19 @@ namespace testUKAD
                         {
                             responseChildPage = await client.GetStringAsync($"{item}");
                             // Собираем все ссылки с html страницы в список ссылок
-                            PickLinks(responseChildPage, out List<string> linkss);
+                            PickLinks(address,responseChildPage, out List<string> linkss, out List<string> allSiteMaps);
 
                             if (linkss.Count == 0)
                             {
                                 break;
                             }
-
+                            if (allSiteMaps.Count != 0)
+                            {
+                                foreach (var i in allSiteMaps)
+                                {
+                                    allLinksMap.Add(i);
+                                }
+                            }
                             foreach (var l in linkss)
                             {
                                 if (l.Equals($"{address}/#"))
@@ -287,46 +335,21 @@ namespace testUKAD
                 {
                     Console.WriteLine($"{ex.Message}");
                 }
- 
+
                 CleanLink(address, allSiteLinks, out List<string> correctLinksD);
-         
-                string responseRobot = await client.GetStringAsync($"{nameRobotTxt}");
 
-                    MapPageLinks(responseRobot, address, out List<string> links);
+                MapPageLinks(nameMap, out List<string> links);
 
-                    XmlDocument xDoc = new XmlDocument();
+                allMaps.AddRange(links);
 
-                    foreach (var item in links)
-                    {
-                        xDoc.Load($"{item}");
+                List<string> mapLinks = allMaps.Distinct().ToList();
 
-                        XmlElement xRoot = xDoc.DocumentElement;
-                        if (xRoot != null)
-                        {
-                            foreach (XmlElement xnode in xRoot)
-                            {
-                                XmlNode attr = xnode.Attributes.GetNamedItem("url");
-
-                                foreach (XmlNode childnode in xnode.ChildNodes)
-                                {
-                                    if (childnode.Name == "loc")
-                                    {
-                                        allLinksMap.Add($"{childnode.InnerText}");
-
-                                    }
-                                }
-                            }
-                        }
-                    }
-             
-                List<string> mapLinks = allLinksMap.Distinct().ToList();
-             
                 Console.WriteLine($"URL-addresses site   = {correctLinksD.Count()}");
                 Console.WriteLine($"  - - - - - - - - - - - - - ");
 
                 Console.WriteLine($"URL-addresses sitemap = {mapLinks.Count()}");
                 Console.WriteLine($"  - - - - - - - - - - - - - ");
-                // соединяем списки
+                // Сединяем списки
                 List<string> SiteAndMapLinks = correctLinksD.Concat(mapLinks).ToList();
 
                 Console.WriteLine($"URL-addresses site + sitemap. = {SiteAndMapLinks.Count()}");
@@ -341,23 +364,23 @@ namespace testUKAD
                     mapLinks.RemoveAll(i => result.Contains(i));
 
                     Console.WriteLine($" URL  SITEMAP.XML - {mapLinks.Count}");
-                    CreateDictionary(mapLinks);
+                    CreateDictionary(mapLinks,address);
                     Console.WriteLine($"  - - - - - - - - - - - - - ");
 
                     Console.WriteLine($" URL  WEB SITE - {correctLinksD.Count}");
                     correctLinksD.RemoveAll(i => result.Contains(i));
-                    CreateDictionary(correctLinksD);
+                    CreateDictionary(correctLinksD,address);
                 }
                 else
                 {
                     Console.WriteLine($" URL  SITEMAP.XML - {mapLinks.Count}");
-                    CreateDictionary(mapLinks);
+                    CreateDictionary(mapLinks,address);
                     Console.WriteLine($"  - - - - - - - - - - - - - ");
 
                     Console.WriteLine($" URL  WEB SITE - {correctLinksD.Count}");
-                    CreateDictionary(correctLinksD);
+                    CreateDictionary(correctLinksD,address);
                 }
-               
+
             }
             catch (HttpRequestException e)
             {
@@ -368,3 +391,13 @@ namespace testUKAD
         }
     }
 }
+/*   
+ *   
+https://atbmarket.com/   
+https://posad.com.ua/      
+https://itstep.kh.ua/
+https://eva.ua/
+https://prostor.ua/
+https://docs.microsoft.com/   
+
+ */
